@@ -1,3 +1,5 @@
+# 프레임워크 없이 SPA 만들기
+
 ## 과제 체크포인트
 
 ### 기본과제
@@ -44,12 +46,313 @@
 - 구현 과정에서의 기술적 도전과 해결
 -->
 
+1. 이벤트 위임
+  - 공통 조상에 이벤트 핸들러를 하나만 할당하여 자식 요소의 이벤트를 한꺼번에 다룰수 있다.
+  - event.target을 이용하여 실제 이벤트가 발행한 자식을 알수 있습니다.
+ 
+2. 이벤트 캡처링
+  -  이벤트가 일어난 타겟 엘리먼트까지 이벤트가 전파되는 과정
+  
+```javascript
+// 3번째 인자에 true 값을 줌으로써 캡처링 단계에서 이벤트를 캐치할 수 있다. ( default: false )
+
+addEventListener(eventType, handler, true);
+```
+
+3. 이벤트 버블링
+  - 이벤트가 일어난 타겟 엘리먼트부터 root 까지 이벤트가 전파되는 과정
+ 
+```javascript
+addEventListener(eventType, handler, false);
+```
+
+```javascript
+<body>
+    <div id="root">
+        root
+        <div id="parents">
+            parents
+            <div id="child">
+                child
+            </div>
+        </div>
+    </div>
+    <script>
+        const root = document.getElementById("root")
+        const parents = document.getElementById("parents")
+        const child = document.getElementById("child")
+       
+        // case 1
+        parents.addEventListener("click", () => console.log("parents"), true)
+        child.addEventListener("click", () => console.log("child"))
+        child.click()
+        // parents
+        // child
+
+        // case 2
+        parents.addEventListener("click", () => console.log("parents"))
+        child.addEventListener("click", () => console.log("child"))
+        child.click()
+        // child
+        // parents
+    </script>
+</body>
+```
+
+- 각 element 에 event handler 를 부착하면 버블링이 되면서 모든 동일한 이벤트를 실행하겠지만 위임을 통해 처리되어 있어서 버블링되는 과정을 직접 구현해야한다.
+
+```javascript
+function createSyntheticEvent(event) {
+  let propagationStopped = false;
+  return {
+    type: event.type,
+    target: event.target,
+    currentTarget: event.target,
+    preventDefault() {
+      event.preventDefault();
+    },
+    stopPropagation() {
+      propagationStopped = true;
+      event.stopPropagation();
+    },
+    isPropagationStopped() {
+      return propagationStopped;
+    },
+    nativeEvent: event,
+  };
+}
+
+function handleGlobalEvent(event) {
+  event = createSyntheticEvent(event);
+  const eventType = event.type;
+  const handlers = eventManager.get(eventType);
+  
+  // dom 트리 상위로 이벤트 전파
+  let currentElement = event.target;
+  while (currentElement && !event.isPropagationStopped()) {
+    if (handlers.has(currentElement)) {
+      const handler = handlers.get(currentElement);
+      handler(event);
+    }
+    currentElement = currentElement.parentElement;
+  }
+}
+```
+
+4. react 는 왜 VDOM을 사용했는가?
+
+- 선언적 UI
+> DOM 조작을 직접 하지 않고, "어떻게 보여야 하는지"만 선언
+
+```javascript
+// 명령형 UI (jQuery 스타일)
+$('#counter').text(count);
+$('#counter').on('click', () => {
+  count++;
+  $('#counter').text(count);
+  if (count > 10) {
+    $('#message').show();
+  }
+});
+
+// 선언적 UI (React 스타일)
+function Counter() {
+  const [count, setCount] = useState(0);
+  
+  return (
+    <div>
+      <div onClick={() => setCount(count + 1)}>
+        {count}
+      </div>
+      {count > 10 && <div>카운트가 10을 넘었습니다!</div>}
+    </div>
+  );
+}
+```
+- 서버 컴포넌트 통합
+
+```javascript
+// ServerComponent.server.js
+import { db } from './database';
+
+async function ServerComponent() {
+  const data = await db.query('SELECT * FROM users');
+  
+  return (
+    <div>
+      {data.map(user => (
+        <ClientComponent 
+          key={user.id} 
+          user={user} 
+        />
+      ))}
+    </div>
+  );
+}
+
+// ClientComponent.client.js
+"use client"
+function ClientComponent({ user }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  return (
+    <div onClick={() => setIsExpanded(!isExpanded)}>
+      {user.name}
+      {isExpanded && <UserDetails user={user} />}
+    </div>
+  );
+}
+```
+- virtual dom 은 실제 dom 보다 경량화된 자바스크립트 객체로 비교 알고리즘을 수행할때 비교적 빠르게 수행가능하다.
+
 ### 코드 품질
 <!-- 예시
 - 특히 만족스러운 구현
 - 리팩토링이 필요한 부분
 - 코드 설계 관련 고민과 결정
 -->
+
+```
+Map {
+   eventType: WeakMap {
+       element: handler
+   }
+}
+```
+
+1. 이벤트 매니저 의 데이터 타입을 위와 같이 구현하여 diff 알고리즘 중 이벤트가 걸려있는 element의 부모가 제거되는 경우 그 하위에 적용되어있는 이벤트 핸들러도 함께 제거될수 있도록 하였습니다. ( WeakMap 의 특징을 활용 )
+
+```javascript
+const eventManager = new Map();
+
+export function addEvent(element, eventType, handler) {
+  if (!eventManager.has(eventType)) {
+    eventManager.set(eventType, new WeakMap());
+  }
+
+  const handlerCache = eventManager.get(eventType);
+  handlerCache.set(element, handler);
+}
+
+export function removeEvent(element, eventType) {
+  if (!eventManager.has(eventType)) {
+    return;
+  }
+
+  const handlerCache = eventManager.get(eventType);
+  handlerCache.delete(element);
+}
+```
+
+2. diff 알고리즘을 통해 실제 변경된 dom 이나 속성만을 변경하여 리렌더링 할 수 있도록 구현하였습니다.
+
+```javascript
+
+function isChangedAttributes(originNewProps, originOldProps) {
+  if (
+    (!originNewProps && originOldProps) ||
+    (originNewProps && !originOldProps)
+  ) {
+    return true;
+  }
+
+  const mergedProps = { ...originOldProps, ...originNewProps };
+  return Object.keys(mergedProps ?? {}).some(
+    (key) => mergedProps[key] !== originOldProps[key],
+  );
+}
+
+
+function updateAttributes(target, originNewProps, originOldProps) {
+  Object.keys(originOldProps ?? {}).forEach((key) => {
+    if (isEvent(key)) {
+      const eventType = key.slice(2).toLowerCase();
+      removeEvent(target, eventType);
+      return;
+    }
+
+    if (isClassName(key)) {
+      target.removeAttribute("class");
+      return;
+    }
+
+    target.removeAttribute(key);
+  });
+
+  Object.keys(originNewProps ?? {}).forEach((key) => {
+    if (isEvent(key)) {
+      const eventType = key.slice(2).toLowerCase();
+      addEvent(target, eventType, originNewProps[key]);
+      return;
+    }
+
+    if (isClassName(key)) {
+      target.setAttribute("class", originNewProps[key]);
+      return;
+    }
+
+    target.setAttribute(key, originNewProps[key]);
+  });
+}
+
+export function updateElement(parentElement, newNode, oldNode, index = 0) {
+  // 새로운 노드가 추가될 경우
+  if (newNode && !oldNode) {
+    parentElement.appendChild(createElement(newNode));
+    return;
+  }
+
+  // 이전 노드가 삭제된 경우
+  if (!newNode && oldNode) {
+    parentElement.removeChild(parentElement.childNodes[index]);
+    return;
+  }
+
+  // 노드의 타입이 다른경우
+  if (newNode.type !== oldNode.type) {
+    parentElement.replaceChild(
+      createElement(newNode),
+      parentElement.childNodes[index],
+    );
+    return;
+  }
+
+  // 텍스트 노드일 경우
+  if (
+    typeof newNode === "string" &&
+    typeof oldNode === "string" &&
+    newNode !== oldNode
+  ) {
+    parentElement.replaceChild(
+      createElement(newNode),
+      parentElement.childNodes[index],
+    );
+    return;
+  }
+
+  if (isChangedAttributes(newNode.props, oldNode.props)) {
+    updateAttributes(
+      parentElement.childNodes[index],
+      newNode.props,
+      oldNode.props,
+    );
+  }
+
+  const newNodeChildren = newNode.children ?? [];
+  const oldNodeChildren = oldNode.children ?? [];
+  const maxChildren = Math.max(newNodeChildren.length, oldNodeChildren.length);
+
+  for (let i = 0; i < maxChildren; i++) {
+    updateElement(
+      parentElement.childNodes[index],
+      newNodeChildren[i],
+      oldNodeChildren[i],
+      i,
+    );
+  }
+}
+
+```
 
 ### 학습 효과 분석
 <!-- 예시
@@ -58,29 +361,5 @@
 - 실무 적용 가능성
 -->
 
-### 과제 피드백
-<!-- 예시
-- 과제에서 모호하거나 애매했던 부분
-- 과제에서 좋았던 부분
--->
-
-## 리뷰 받고 싶은 내용
-
-<!--
-피드백 받고 싶은 내용을 구체적으로 남겨주세요
-모호한 요청은 피드백을 남기기 어렵습니다.
-
-참고링크: https://chatgpt.com/share/675b6129-515c-8001-ba72-39d0fa4c7b62
-
-모호한 요청의 예시)
-- 코드 스타일에 대한 피드백 부탁드립니다.
-- 코드 구조에 대한 피드백 부탁드립니다.
-- 개념적인 오류에 대한 피드백 부탁드립니다.
-- 추가 구현이 필요한 부분에 대한 피드백 부탁드립니다.
-
-구체적인 요청의 예시)
-- 현재 함수와 변수명을 보면 직관성이 떨어지는 것 같습니다. 함수와 변수를 더 명확하게 이름 지을 수 있는 방법에 대해 조언해주실 수 있나요?
-- 현재 파일 단위로 코드가 분리되어 있지만, 모듈화나 계층화가 부족한 것 같습니다. 어떤 기준으로 클래스를 분리하거나 모듈화를 진행하면 유지보수에 도움이 될까요?
-- MVC 패턴을 따르려고 했는데, 제가 구현한 구조가 MVC 원칙에 맞게 잘 구성되었는지 검토해주시고, 보완할 부분을 제안해주실 수 있을까요?
-- 컴포넌트 간의 의존성이 높아져서 테스트하기 어려운 상황입니다. 의존성을 낮추고 테스트 가능성을 높이는 구조 개선 방안이 있을까요?
--->
+1. 추가 학습이 필요한 영역
+- react fiber 아키텍쳐를 상세히 공부해서 해당 프로젝트에 적용해보려고 했지만 생각보다 방대한 양에 일단 최대한 더 공부해보고 최소한의 기능 ( useState, useEffect ) 를 구현해볼 계획입니다.
